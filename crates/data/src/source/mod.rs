@@ -15,6 +15,8 @@ pub mod fgb;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod gdal;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod geojson;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod gpkg;
 mod gpkg_blob;
 pub mod gpkg_mem;
@@ -141,6 +143,10 @@ pub fn open_path(path: &Path, layer: Option<&str>) -> Result<Box<dyn FeatureSour
         "las" | "laz" => Ok(Box::new(lidar::LidarSource::open_path(path, &name)?)),
         #[cfg(not(target_arch = "wasm32"))]
         "gpkg" => Ok(Box::new(gpkg::GpkgSource::open(path, layer)?)),
+        // Only large GeoJSON files are read in place (see `geojson`); `is_source_name` leaves
+        // them out.
+        #[cfg(not(target_arch = "wasm32"))]
+        "geojson" | "json" => Ok(Box::new(geojson::GeoJsonSource::open_path(path, &name)?)),
         other => {
             let _ = layer;
             Err(DataError::Unsupported(other.to_string()))

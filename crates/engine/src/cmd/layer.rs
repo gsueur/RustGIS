@@ -422,6 +422,18 @@ fn add_data(s: &mut Session, p: &Value) -> CmdResult {
     if rustgis_data::source::is_source_name(path) {
         return add_source(s, p, Origin::Path(path));
     }
+    // A large GeoJSON FeatureCollection (any, with `"stream": true`) is read in place, streamed
+    // when it holds many features; another GeoJSON document, or one that can't be read so, is
+    // read whole below.
+    #[cfg(not(target_arch = "wasm32"))]
+    if is_geojson(path)
+        && b(p, "stream").unwrap_or_else(|| {
+            std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() > rustgis_data::source::geojson::IN_PLACE_ABOVE)
+        })
+        && let Ok(r) = add_source(s, p, Origin::Path(path))
+    {
+        return Ok(r);
+    }
     // A PMTiles archive is a tile layer (raster or vector, as its header says).
     if path.to_ascii_lowercase().ends_with(".pmtiles") {
         if cfg!(target_arch = "wasm32") {
@@ -758,6 +770,13 @@ fn file_layers(_s: &mut Session, p: &Value) -> CmdResult {
     }
     let name = Path::new(path).file_stem().and_then(|n| n.to_str()).unwrap_or("layer");
     Ok(json!({"count": 1, "layers": [name]}))
+}
+
+/// Whether a file name is GeoJSON's (`.geojson` or `.json`).
+#[cfg(not(target_arch = "wasm32"))]
+fn is_geojson(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".geojson") || lower.ends_with(".json")
 }
 
 /// Where a source file is: on disk, or uploaded (its name and bytes).
