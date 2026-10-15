@@ -11,7 +11,7 @@ Formats](data-formats.md).
 | Delimited text (`.csv`, `.tsv`, `.txt`) with x/y columns in any coordinate system, or WKT geometry | Yes | Yes |
 | Shapefile (`.shp` + `.dbf`, or zipped in a `.zip`) | Yes (the web app opens zips) | Yes (`share.exportLayer`) |
 | GeoPackage (`.gpkg`, every feature table) | Yes | Yes (desktop) |
-| GeoParquet (`.parquet`, `.geoparquet`, WKB geometry) | Yes (zstd-compressed files on the desktop only) | Yes |
+| GeoParquet (`.parquet`, `.geoparquet`, WKB geometry) | Yes | Yes |
 | FlatGeobuf (`.fgb`) | Yes | Yes (`share.exportLayer`) |
 | KML/KMZ (with their styles), GPX | Yes | Yes |
 | Spreadsheets (`.xlsx`, `.xls`, `.ods`), GeoRSS feeds, LandXML, encoded polylines | Yes | No |
