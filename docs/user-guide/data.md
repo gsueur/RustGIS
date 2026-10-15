@@ -417,13 +417,13 @@ their coordinates (CF time units as dates, the `noleap` and `360_day` model cale
 a few at a time, in the background.
 
 Stores are read in pure Rust, in the web app as well as on the desktop: Zarr 2 with consolidated
-metadata (`.zmetadata`, as xarray writes) and Zarr 3 (`zarr.json`), chunks compressed with blosc
-(LZ4, zlib or zstd, byte-shuffled), zlib, gzip, zstd or LZ4, of integer or float values, in C or
-Fortran order. Fill values, `_FillValue` and `missing_value` are no data; `scale_factor` and
+metadata (`.zmetadata`, as xarray writes) and Zarr 3 (`zarr.json`, sharded arrays too), chunks
+compressed with blosc (LZ4, zlib or zstd, byte- or bit-shuffled), zlib, gzip, zstd or LZ4, of
+integer or float values, in C or Fortran order. A sharded array's shards are fetched whole. Fill values, `_FillValue` and `missing_value` are no data; `scale_factor` and
 `add_offset` are applied. The coordinates must be evenly spaced (a curvilinear grid isn't read);
 longitude/latitude grids of 0–360° are turned to -180–180°, and projected ones take their
 coordinate system from the variable's grid mapping (`crs_wkt`, `spatial_ref`, an EPSG code) or
-`"crs"`. Sharded Zarr 3 arrays, bit-shuffled and blosclz-compressed chunks aren't read yet, and
+`"crs"`. Blosclz-compressed and transposed chunks and shards inside shards aren't read yet, and
 say so. A store by web address must allow the browser to fetch it (CORS) for the web app;
 Google Cloud's CMIP6 bucket does, ARCO-ERA5's doesn't (the desktop reads both).
 
