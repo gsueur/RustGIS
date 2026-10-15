@@ -284,6 +284,9 @@ pub struct UiState {
     /// Data downloading from web addresses (Add Data › From URL): the address, the parameters to
     /// add it with, and where the download lands.
     pub downloads: Vec<(u64, String, Value, Slot<Result<Vec<u8>, String>>)>,
+    /// A project downloading from its web address (`ui.openUrl`, a `?project=` link): the
+    /// address and where the download lands. A later one replaces it.
+    pub project_download: Option<(String, Slot<Result<Vec<u8>, String>>)>,
     /// The SQL pane's editor, results and history.
     pub sql: sqlpane::State,
     /// GeoTIFFs, FlatGeobufs and GeoParquets by address whose headers are being read: those
@@ -358,6 +361,7 @@ impl Default for UiState {
             web_file: None,
             pending_csv: None,
             downloads: Vec::new(),
+            project_download: None,
             sql: Default::default(),
             cog_probes: Vec::new(),
             link_zoomed: false,
@@ -1092,6 +1096,19 @@ impl RustGisApp {
                     };
                 }
             }
+            // A project by its web address (a `?project=` link): downloaded off the frame, opened
+            // when it lands, in place of the open project (see `poll_downloads`).
+            "ui.openUrl" => {
+                let url = p.get("url").and_then(Value::as_str).map(str::trim).filter(|u| !u.is_empty()).ok_or("url is required")?;
+                let slot: Slot<Result<Vec<u8>, String>> = Slot::default();
+                let land = slot.clone();
+                rustgis_engine::render::rustgis_tiles::cache::download(
+                    url,
+                    Box::new(move |r| *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(r)),
+                );
+                self.session.notify(i18n::fmt("Opening {url}…", &[("url", url)]), false);
+                self.ui.project_download = Some((url.to_string(), slot));
+            }
             // A STAC item's or collection's address (a `?stac=` link): STAC Search opens on it,
             // and an item's default asset is added.
             "ui.stacLink" => {
@@ -1820,6 +1837,30 @@ impl RustGisApp {
     /// Adds the data downloads that have landed (Add Data › From URL). The bytes go to the session
     /// as they are; a download of a project that has since been closed is dropped.
     fn poll_downloads(&mut self) {
+        let landed = self.ui.project_download.as_ref().and_then(|(url, slot)| {
+            let r = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+            r.map(|r| (url.clone(), r))
+        });
+        if let Some((url, r)) = landed {
+            self.ui.project_download = None;
+            let opened = r.and_then(|bytes| match project_file_name(&url) {
+                Some(name) => self.open_bytes(name, &bytes),
+                // Served without a project's file name (an API, say): read as a project, which
+                // keeps its own name.
+                None => {
+                    let text = std::str::from_utf8(&bytes).map_err(|_| "not a RustGIS project".to_string())?;
+                    let r = self.run("project.openText", json!({"text": text}));
+                    if r.is_ok() {
+                        self.ui.web_file = Some(format!("{}.rgis", self.session.project.name));
+                    }
+                    self.map.invalidate();
+                    r
+                }
+            });
+            if let Err(e) = opened {
+                self.session.notify(if e.starts_with(&url) { e } else { format!("{url}: {e}") }, true);
+            }
+        }
         // GeoTIFFs, FlatGeobufs and GeoParquets whose headers are in: read in place, or
         // downloaded whole.
         let mut probed = Vec::new();
@@ -2136,4 +2177,12 @@ impl RustGisApp {
             self.sent_title = title;
         }
     }
+}
+
+/// The file name at the end of a project's web address, when it names a project or a project
+/// package; the project is then opened as that file would be.
+fn project_file_name(url: &str) -> Option<&str> {
+    let path = url.split(['?', '#']).next().unwrap_or("");
+    let last = path.rsplit('/').next().unwrap_or("");
+    (rustgis_engine::project::is_project_file(last) || last.to_ascii_lowercase().ends_with(".rgispkg")).then_some(last)
 }

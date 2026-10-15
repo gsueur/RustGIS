@@ -510,6 +510,49 @@ fn data_from_a_web_address_lands_later() {
     assert!(h.state().ui.downloads.is_empty());
 }
 
+/// A project by its web address (a `?project=` link) downloads off the frame and replaces the
+/// open project when it lands, its layers and view with it; a failed download is said and keeps
+/// the open project.
+#[test]
+fn a_project_from_a_web_address_opens_when_it_lands() {
+    use std::io::{Read, Write};
+    let mut h = harness();
+    h.step();
+    let mut shared = h.state().session.project.clone();
+    shared.name = "Shared map".into();
+    let layers = shared.map().layers.len();
+    let body = serde_json::to_string(&shared).unwrap().into_bytes();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().take(1) {
+            let Ok(mut s) = stream else { continue };
+            let mut buf = [0u8; 2048];
+            let _ = s.read(&mut buf);
+            let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+            let _ = s.write_all(&body);
+        }
+    });
+    h.state_mut().run("project.new", json!({})).unwrap();
+    assert!(h.state_mut().run("ui.openUrl", json!({})).is_err());
+    // An API's address, without the extension, is still read as a project.
+    h.state_mut().run("ui.openUrl", json!({"url": format!("http://{addr}/maps/7/project?v=2")})).unwrap();
+    for _ in 0..100 {
+        h.step();
+        if h.state().session.project.name == "Shared map" {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(h.state().session.project.name, "Shared map");
+    assert_eq!(h.state().session.map().layers.len(), layers);
+    assert!(h.state().ui.project_download.is_none());
+    h.state_mut().run("ui.openUrl", json!({"url": "http://169.254.169.254/a.rgis"})).unwrap();
+    h.step();
+    assert!(h.state().session.notices.iter().any(|n| n.error && n.text.contains("never fetched")));
+    assert_eq!(h.state().session.project.name, "Shared map");
+}
+
 /// Add From Service connects in the background and lists the service's layers in the dialog.
 #[test]
 fn a_service_is_listed_when_its_capabilities_land() {
