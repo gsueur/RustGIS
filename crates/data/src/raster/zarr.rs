@@ -280,8 +280,10 @@ impl Array {
     /// value `i` is at `i * size`.
     pub fn decode_bytes(&self, bytes: &[u8]) -> Result<(Vec<u8>, DType)> {
         self.chunk_values()?;
-        let (data, little) = decode_chunk(&self.codecs, bytes, &self.chunks, self.dtype, self.fill).map_err(|e| {
-            if self.path.is_empty() { e } else { bad(format!("{}: {}", self.path, e.to_string().trim_start_matches("format error: "))) }
+        let (data, little) = decode_chunk(&self.codecs, bytes, &self.chunks, self.dtype, self.fill).map_err(|e| match e {
+            e if self.path.is_empty() => e,
+            DataError::Format(m) => bad(format!("{}: {m}", self.path)),
+            e => bad(format!("{}: {e}", self.path)),
         })?;
         Ok((data, DType { little, ..self.dtype }))
     }
@@ -1798,6 +1800,18 @@ mod tests {
             assert_eq!(blosc(&f, raw.len()).unwrap(), raw, "format {format}");
         }
         assert_eq!(bitunshuffle(&bitshuffle(&raw[..64], 2), 2, 2), raw[..64]);
+        // As c-blosc 1.21 writes it (numcodecs `Blosc(cname="zstd", clevel=9, shuffle=BITSHUFFLE)`
+        // of `arange(3000, dtype="<i4") // 7`): one 12,000-byte block, its bits transposed whole
+        // (bitshuffle's 8 KiB sub-blocks are its own framing, which blosc doesn't use).
+        let hex = concat!(
+            "02019404e02e0000e02e000078000000140000006000000028b52ffd60e02db502005242070ef01903d27a8f44ed7297",
+            "b9b16c0af7f6f6feff6ded8b47e9848b920914a0c05e661df0300cb701ad016f12858b2928e35426fd34dd31af0e33dd",
+            "19cfae1e4667aba7aa554766810ab06cab9a5bab6c93aa5b",
+        );
+        let real: Vec<u8> = (0..hex.len() / 2).map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap()).collect();
+        assert_eq!((real[0], real[2] & 0x4, u32::from_le_bytes(real[8..12].try_into().unwrap())), (2, 0x4, 12_000));
+        let want: Vec<u8> = (0..3000i32).flat_map(|v| (v / 7).to_le_bytes()).collect();
+        assert_eq!(blosc(&real, want.len()).unwrap(), want);
         assert_eq!(to_f16(1.0), 0x3c00);
         assert_eq!(f16(to_f16(-2.5)), -2.5);
         assert_eq!(DType::parse_v2(">i2").unwrap().encode(-2.0, false), vec![0xff, 0xfe]);

@@ -419,8 +419,10 @@ a few at a time, in the background.
 Stores are read in pure Rust, in the web app as well as on the desktop: Zarr 2 with consolidated
 metadata (`.zmetadata`, as xarray writes) and Zarr 3 (`zarr.json`, sharded arrays too), chunks
 compressed with blosc (LZ4, zlib or zstd, byte- or bit-shuffled), zlib, gzip, zstd or LZ4, of
-integer or float values, in C or Fortran order. A sharded array's shards are fetched whole. Fill values, `_FillValue` and `missing_value` are no data; `scale_factor` and
-`add_offset` are applied. The coordinates must be evenly spaced (a curvilinear grid isn't read);
+integer or float values, in C or Fortran order. A sharded array's shards are fetched whole.
+`_FillValue`, `missing_value` and a Zarr 2 array's fill value are no data; a Zarr 3 array's fill
+value isn't: chunks never written are left empty, but chunks missing from inside a shard show the
+fill value. `scale_factor` and `add_offset` are applied. The coordinates must be evenly spaced (a curvilinear grid isn't read);
 longitude/latitude grids of 0–360° are turned to -180–180°, and projected ones take their
 coordinate system from the variable's grid mapping (`crs_wkt`, `spatial_ref`, an EPSG code) or
 `"crs"`. Blosclz-compressed and transposed chunks and shards inside shards aren't read yet, and
