@@ -350,10 +350,11 @@ database is kept without its password. The commands `sources.list`, `sources.sav
 
 ## Large files
 
-GeoPackage, GeoParquet and FlatGeobuf files with more than 100,000 features are read in place
-rather than loaded whole, so files far larger than memory open in a moment. The layer reads the
-features in view, using the file's own spatial index (the GeoPackage R-tree, the FlatGeobuf
-packed R-tree, GeoParquet row-group bounding boxes), in the background as the map moves. When a
+GeoPackage, GeoParquet, FlatGeobuf and (on the desktop) Shapefile files with more than 100,000
+features are read in place rather than loaded whole, so files far larger than memory open in a
+moment. The layer reads the features in view, using the file's own spatial index (the GeoPackage
+R-tree, the FlatGeobuf packed R-tree, GeoParquet row-group bounding boxes; for a Shapefile, the
+shapes' bounding boxes, read once when it opens), in the background as the map moves. When a
 view holds more than 250,000 features (100,000 in the web app), the layer draws an evenly spread
 sample of them and its tooltip in Layers says so: zoom in to see them all. Smaller files load
 whole; `layer.addData` with `"stream": true` or `false` overrides the choice.

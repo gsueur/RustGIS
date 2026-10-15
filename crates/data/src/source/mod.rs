@@ -22,6 +22,8 @@ pub mod lidar;
 pub mod parquet;
 pub mod pgconn;
 pub mod remote;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod shp;
 
 use crate::raster::{Crs, Transformer};
 use crate::{DataError, Dataset, Feature, Field, Geometry, GeometryType, ReadReport, Result};
@@ -141,6 +143,9 @@ pub fn open_path(path: &Path, layer: Option<&str>) -> Result<Box<dyn FeatureSour
         "las" | "laz" => Ok(Box::new(lidar::LidarSource::open_path(path, &name)?)),
         #[cfg(not(target_arch = "wasm32"))]
         "gpkg" => Ok(Box::new(gpkg::GpkgSource::open(path, layer)?)),
+        // Only large Shapefiles are read in place (see `shp`); `is_source_name` leaves them out.
+        #[cfg(not(target_arch = "wasm32"))]
+        "shp" => Ok(Box::new(shp::ShpSource::open_path(path, &name)?)),
         other => {
             let _ = layer;
             Err(DataError::Unsupported(other.to_string()))
@@ -322,6 +327,12 @@ impl Reproject {
                 }
             },
         };
+        Reproject::from_crs(crs, notes)
+    }
+
+    /// From a coordinate system; one that can't be converted is taken as longitude/latitude, with
+    /// a note.
+    pub(crate) fn from_crs(crs: Crs, notes: &mut Vec<String>) -> Reproject {
         let t = match crs {
             Crs::LonLat => None,
             other => match other.transformer() {
@@ -333,6 +344,11 @@ impl Reproject {
             },
         };
         Reproject { crs: if t.is_some() { crs } else { Crs::LonLat }, t }
+    }
+
+    /// Whether coordinates are taken as they are.
+    pub(crate) fn is_lonlat(&self) -> bool {
+        self.t.is_none()
     }
 
     pub(crate) fn label(&self) -> String {
