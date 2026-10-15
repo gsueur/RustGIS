@@ -114,7 +114,9 @@ impl ShpSource {
                 notes.push(format!("the .shp ends partway through record {}; the rest are left out", places.len() + 1));
                 break;
             }
-            let c = head.get(8..want).unwrap_or(&[]);
+            // Only this record's bytes: a short one (a null shape, or a damaged one) mustn't read
+            // its box from the next record's header.
+            let c = head.get(8..(want as u64).min(8 + len) as usize).unwrap_or(&[]);
             boxes.push(record_box(c));
             places.push(Place { offset: content as u32, len: len as u32 });
             pos = content + len;
@@ -152,15 +154,17 @@ impl ShpSource {
 
     /// The records a request matches, in file order: every one without an extent; otherwise
     /// those whose boxes meet it (null shapes never do).
-    fn matches(&self, req: &Request) -> Vec<u32> {
-        let Some(e) = req.extent.map(|e| self.reproject.extent_from_lonlat(&e)) else {
-            return (0..self.places.len() as u32).collect();
-        };
-        if e.is_empty() {
-            return Vec::new();
-        }
-        let (x0, y0, x1, y1) = (e.min_x as f32, e.min_y as f32, e.max_x as f32, e.max_y as f32);
-        self.boxes.iter().enumerate().filter(|(_, b)| b[0] <= x1 && b[2] >= x0 && b[1] <= y1 && b[3] >= y0).map(|(i, _)| i as u32).collect()
+    fn matches(&self, req: &Request) -> impl Iterator<Item = u32> + '_ {
+        // Rounded to the nearest f32: never past a box rounded outward that meets the extent.
+        let e = req
+            .extent
+            .map(|e| self.reproject.extent_from_lonlat(&e))
+            .map(|e| (e.is_empty(), [e.min_x as f32, e.min_y as f32, e.max_x as f32, e.max_y as f32]));
+        self.boxes.iter().enumerate().filter_map(move |(i, b)| match e {
+            None => Some(i as u32),
+            Some((true, _)) => None,
+            Some((false, [x0, y0, x1, y1])) => (b[0] <= x1 && b[2] >= x0 && b[1] <= y1 && b[3] >= y0).then_some(i as u32),
+        })
     }
 }
 
@@ -171,9 +175,10 @@ impl FeatureSource for ShpSource {
 
     fn read(&self, req: &Request) -> Result<Batch> {
         let limit = clamp_limit(req.limit);
-        let matched = self.matches(req);
-        let step = stride(matched.len() as u64, limit).max(1) as usize;
-        let wanted: Vec<u32> = matched.iter().step_by(step).take(limit).copied().collect();
+        // Counted first, then the sample taken: no list of every match.
+        let matched = self.matches(req).count();
+        let step = stride(matched as u64, limit).max(1) as usize;
+        let wanted: Vec<u32> = self.matches(req).step_by(step).take(limit).collect();
         let mut shp = Cursor::open(&self.shp)?;
         let mut dbf = Cursor::open(&self.dbf)?;
         let mut buf = Vec::new();
@@ -217,7 +222,7 @@ impl FeatureSource for ShpSource {
             };
             features.push(Feature { id: u64::from(i) + 1, geometry, attrs });
         }
-        Ok(Batch { features, matched: matched.len() as u64, complete: step == 1, skipped })
+        Ok(Batch { features, matched: matched as u64, complete: step == 1, skipped })
     }
 }
 
@@ -426,10 +431,8 @@ fn value(c: &Column, b: &[u8]) -> Value {
             None => Value::Null,
         },
         b'I' => b.get(..4).and_then(|v| v.try_into().ok()).map_or(Value::Null, |v| Value::Int(i64::from(i32::from_le_bytes(v)))),
-        b'O' => {
-            b.get(..8).and_then(|v| v.try_into().ok()).map(f64::from_le_bytes).filter(|v| v.is_finite()).map_or(Value::Null, Value::Float)
-        }
-        b'Y' => {
+        // Currency as the `dbase` crate reads it (a Shapefile read whole): a little-endian f64.
+        b'O' | b'Y' => {
             b.get(..8).and_then(|v| v.try_into().ok()).map(f64::from_le_bytes).filter(|v| v.is_finite()).map_or(Value::Null, Value::Float)
         }
         b'L' => match trimmed(b).first() {

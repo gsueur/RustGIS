@@ -347,6 +347,7 @@ impl Reproject {
     }
 
     /// Whether coordinates are taken as they are.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn is_lonlat(&self) -> bool {
         self.t.is_none()
     }
