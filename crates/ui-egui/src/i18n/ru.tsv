@@ -1879,3 +1879,4 @@ Zoom To World	Приблизить к миру
 © OpenStreetMap contributors	© участники OpenStreetMap
 ⌘K	⌘K
 Opening {url}…	Открывается {url}…
+{url}: downloaded after another project was opened, so it wasn't opened	{url}: загружен после открытия другого проекта, поэтому не открыт

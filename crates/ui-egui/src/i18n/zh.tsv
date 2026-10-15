@@ -1879,3 +1879,4 @@ Zoom To World	缩放至世界
 © OpenStreetMap contributors	© OpenStreetMap 贡献者
 ⌘K	⌘K
 Opening {url}…	正在打开 {url}…
+{url}: downloaded after another project was opened, so it wasn't opened	{url}：在打开另一个项目之后才下载完成，因此未打开

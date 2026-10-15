@@ -285,8 +285,9 @@ pub struct UiState {
     /// add it with, and where the download lands.
     pub downloads: Vec<(u64, String, Value, Slot<Result<Vec<u8>, String>>)>,
     /// A project downloading from its web address (`ui.openUrl`, a `?project=` link): the
-    /// address and where the download lands. A later one replaces it.
-    pub project_download: Option<(String, Slot<Result<Vec<u8>, String>>)>,
+    /// session's download id, the address and where the download lands. A later one replaces it;
+    /// opening another project meanwhile drops it.
+    pub project_download: Option<(u64, String, Slot<Result<Vec<u8>, String>>)>,
     /// The SQL pane's editor, results and history.
     pub sql: sqlpane::State,
     /// GeoTIFFs, FlatGeobufs and GeoParquets by address whose headers are being read: those
@@ -1107,7 +1108,10 @@ impl RustGisApp {
                     Box::new(move |r| *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(r)),
                 );
                 self.session.notify(i18n::fmt("Opening {url}…", &[("url", url)]), false);
-                self.ui.project_download = Some((url.to_string(), slot));
+                let id = self.session.download_started();
+                if let Some((old, ..)) = self.ui.project_download.replace((id, url.to_string(), slot)) {
+                    self.session.download_failed(old);
+                }
             }
             // A STAC item's or collection's address (a `?stac=` link): STAC Search opens on it,
             // and an item's default asset is added.
@@ -1837,30 +1841,52 @@ impl RustGisApp {
     /// Adds the data downloads that have landed (Add Data › From URL). The bytes go to the session
     /// as they are; a download of a project that has since been closed is dropped.
     fn poll_downloads(&mut self) {
-        let landed = self.ui.project_download.as_ref().and_then(|(url, slot)| {
+        let landed = self.ui.project_download.as_ref().and_then(|(id, url, slot)| {
             let r = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
-            r.map(|r| (url.clone(), r))
+            r.map(|r| (*id, url.clone(), r))
         });
-        if let Some((url, r)) = landed {
+        if let Some((id, url, r)) = landed {
             self.ui.project_download = None;
-            let opened = r.and_then(|bytes| match project_file_name(&url) {
-                Some(name) => self.open_bytes(name, &bytes),
-                // Served without a project's file name (an API, say): read as a project, which
-                // keeps its own name.
-                None => {
-                    let text = std::str::from_utf8(&bytes).map_err(|_| "not a RustGIS project".to_string())?;
-                    let r = self.run("project.openText", json!({"text": text}));
-                    if r.is_ok() {
-                        self.ui.web_file = Some(format!("{}.rgis", self.session.project.name));
-                    }
-                    self.map.invalidate();
-                    r
+            // Another project opened while this one downloaded: it stays.
+            if !self.session.download_done(id) {
+                if r.is_ok() {
+                    self.session.notify(
+                        i18n::fmt("{url}: downloaded after another project was opened, so it wasn't opened", &[("url", &url)]),
+                        false,
+                    );
                 }
-            });
-            if let Err(e) = opened {
+                return self.poll_data_downloads();
+            }
+            if let Err(e) = r.and_then(|bytes| self.open_project_bytes(project_file_name(&url), &bytes)) {
                 self.session.notify(if e.starts_with(&url) { e } else { format!("{url}: {e}") }, true);
             }
         }
+        self.poll_data_downloads();
+    }
+
+    /// Opens a downloaded project: a `.rgispkg` package, or project JSON named after its file (or
+    /// keeping its own name when the address has none). Unlike [`Self::open_bytes`], it never takes
+    /// a picker's pending item: the download isn't the file the user is picking.
+    fn open_project_bytes(&mut self, file: Option<&str>, bytes: &[u8]) -> Result<Value, String> {
+        let package = file.is_some_and(|f| f.to_ascii_lowercase().ends_with(".rgispkg"));
+        let text = if package {
+            rustgis_engine::cmd::items::package_text(bytes)?
+        } else {
+            std::str::from_utf8(bytes).map_err(|_| "not a RustGIS project".to_string())?.to_string()
+        };
+        let mut p = json!({"text": text});
+        if let Some(f) = file.filter(|_| !package) {
+            p["fileName"] = json!(f);
+        }
+        let r = self.run("project.openText", p);
+        if r.is_ok() && !package {
+            self.ui.web_file = Some(format!("{}.rgis", self.session.project.name));
+        }
+        self.map.invalidate();
+        r
+    }
+
+    fn poll_data_downloads(&mut self) {
         // GeoTIFFs, FlatGeobufs and GeoParquets whose headers are in: read in place, or
         // downloaded whole.
         let mut probed = Vec::new();
