@@ -315,14 +315,22 @@ impl SourceLayer {
     /// (or footer) off the frame, taken by a later call when it has landed.
     fn open_remote(&mut self, url: &str) -> Result<(), String> {
         if let Some(slot) = self.opening.clone() {
+            // A file that can't be read in place is downloaded whole into the same slot, by the
+            // first copy to see it; the others wait on that download rather than start their own.
+            let claimed = slot.lock().ok().is_some_and(|mut s| {
+                let whole = matches!(&*s, Some(Err(e)) if e.contains(rustgis_data::source::remote::READ_WHOLE));
+                if whole {
+                    *s = None;
+                }
+                whole
+            });
+            if claimed {
+                return self.open_whole(url, slot);
+            }
             // Read, not taken: copies of the layer (undo, Load All Features) share the slot.
             let done = slot.lock().ok().and_then(|s| s.clone());
             return match done {
                 None => Ok(()),
-                Some(Err(e)) if e.contains(rustgis_data::source::remote::READ_WHOLE) => {
-                    self.opening = None;
-                    self.open_whole(url)
-                }
                 Some(r) => {
                     self.opening = None;
                     self.opened(r)
@@ -331,7 +339,7 @@ impl SourceLayer {
         }
         match rustgis_data::source::open_url_now(url) {
             Ok(s) => self.opened(Ok(Arc::from(s))),
-            Err(e) if e.to_string().contains(rustgis_data::source::remote::READ_WHOLE) => self.open_whole(url),
+            Err(e) if e.to_string().contains(rustgis_data::source::remote::READ_WHOLE) => self.open_whole(url, Arc::new(Mutex::new(None))),
             Err(e) if e.to_string().contains(rustgis_data::source::remote::NEED) => {
                 let slot: Opening = Arc::new(Mutex::new(None));
                 let land = slot.clone();
@@ -355,8 +363,8 @@ impl SourceLayer {
     /// covering, a FlatGeobuf without a spatial index, a server without byte ranges): downloaded
     /// whole off the frame and read from memory, as Add Data From URL does, so a project's layer
     /// keeps its symbology instead of staying empty. The project keeps the address, not the bytes.
-    fn open_whole(&mut self, url: &str) -> Result<(), String> {
-        let slot: Opening = Arc::new(Mutex::new(None));
+    /// The download lands in `slot`, which copies of the layer may share.
+    fn open_whole(&mut self, url: &str, slot: Opening) -> Result<(), String> {
         let land = slot.clone();
         self.opening = Some(slot);
         let name = url.split(['?', '#']).next().unwrap_or(url).rsplit('/').next().unwrap_or("layer").to_string();

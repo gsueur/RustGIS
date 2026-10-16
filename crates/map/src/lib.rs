@@ -319,7 +319,10 @@ impl Layer {
             return Err(format!("the layer has more features than the {max} read at once"));
         }
         ds.name = self.dataset.name.clone();
-        ds.fields = self.dataset.fields.clone();
+        // (A project that lists no fields keeps the source's, as `sync_source` gives it.)
+        if !self.dataset.fields.is_empty() {
+            ds.fields = self.dataset.fields.clone();
+        }
         ds.source = self.dataset.source.clone();
         Ok(ds)
     }

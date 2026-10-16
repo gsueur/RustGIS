@@ -4806,10 +4806,15 @@ fn flatgeobuf_and_geoparquet_by_address_are_read_in_place() {
     }
     let mut v = Session::new(Project::default());
     v.run("project.openText", &json!({"text": bare.to_string()})).unwrap();
+    // Load All Features before the layer has drawn keeps them too.
+    let all = v.map().layers.iter().find(|l| l.is_streamed()).unwrap().load_all().unwrap();
+    assert_eq!(all.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["n"]);
     sync(&mut v);
     let l = v.map().layers.iter().find(|l| l.is_streamed()).unwrap();
     assert_eq!(l.dataset.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["n"]);
-    assert!(!l.dataset.features.is_empty() && l.dataset.features.iter().all(|f| f.attrs.len() == 1));
+    // The values themselves, not nulls padded in for a missing field.
+    assert!(!l.dataset.features.is_empty());
+    assert!(l.dataset.features.iter().all(|f| f.attrs.len() == 1 && matches!(f.attrs[0], Value::Int(_))));
     // Copies of a layer still opening (undo snapshots, Load All Features) all open: they share
     // what opening brought, none takes it from the others.
     // The server holds its answers, so the copies are made while the header is still on its way.
