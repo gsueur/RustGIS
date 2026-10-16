@@ -319,6 +319,10 @@ impl SourceLayer {
             let done = slot.lock().ok().and_then(|s| s.clone());
             return match done {
                 None => Ok(()),
+                Some(Err(e)) if e.contains(rustgis_data::source::remote::READ_WHOLE) => {
+                    self.opening = None;
+                    self.open_whole(url)
+                }
                 Some(r) => {
                     self.opening = None;
                     self.opened(r)
@@ -327,6 +331,7 @@ impl SourceLayer {
         }
         match rustgis_data::source::open_url_now(url) {
             Ok(s) => self.opened(Ok(Arc::from(s))),
+            Err(e) if e.to_string().contains(rustgis_data::source::remote::READ_WHOLE) => self.open_whole(url),
             Err(e) if e.to_string().contains(rustgis_data::source::remote::NEED) => {
                 let slot: Opening = Arc::new(Mutex::new(None));
                 let land = slot.clone();
@@ -344,6 +349,36 @@ impl SourceLayer {
             }
             Err(e) => self.opened(Err(e.to_string())),
         }
+    }
+
+    /// A file by its web address that can't be read in place (a GeoParquet without a bounding-box
+    /// covering, a FlatGeobuf without a spatial index, a server without byte ranges): downloaded
+    /// whole off the frame and read from memory, as Add Data From URL does, so a project's layer
+    /// keeps its symbology instead of staying empty. The project keeps the address, not the bytes.
+    fn open_whole(&mut self, url: &str) -> Result<(), String> {
+        let slot: Opening = Arc::new(Mutex::new(None));
+        let land = slot.clone();
+        self.opening = Some(slot);
+        let name = url.split(['?', '#']).next().unwrap_or(url).rsplit('/').next().unwrap_or("layer").to_string();
+        let table = self.table.clone();
+        let url = url.to_string();
+        rustgis_data::source::remote::fetch_whole(
+            &url.clone(),
+            Box::new(move |r| {
+                let r = match r {
+                    Ok(bytes) => rustgis_data::source::open_shared(&name, Arc::new(bytes), table.as_deref())
+                        .map(Arc::from)
+                        .map_err(|e| format!("{url}: {e}")),
+                    Err(rustgis_data::source::remote::Failed::Other(e)) => Err(format!("{url}: {e}")),
+                    Err(e) => Err(format!("{url}: couldn't be downloaded ({e:?})")),
+                };
+                if let Ok(mut s) = land.lock() {
+                    *s = Some(r);
+                }
+                landed();
+            }),
+        );
+        Ok(())
     }
 
     fn opened(&mut self, r: Result<Arc<dyn FeatureSource>, String>) -> Result<(), String> {

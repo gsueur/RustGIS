@@ -4786,6 +4786,30 @@ fn flatgeobuf_and_geoparquet_by_address_are_read_in_place() {
     assert!(!again.dataset.features.is_empty(), "{:?}", again.source.as_ref().unwrap().error);
     // Load All Features: every feature, fetched.
     assert_eq!(again.load_all().unwrap().features.len(), 40_000);
+    // A project layer whose file can't be read in place (here a server that ignores ranges; a
+    // GeoParquet without a bbox covering alike) is downloaded whole, not left empty, and keeps its
+    // symbology; the project still keeps the address.
+    let (plain, _) = serve_file(fgb.clone(), false);
+    let mut w = Session::new(Project::default());
+    w.run("project.openText", &json!({"text": text.replace(&base, &plain)})).unwrap();
+    let renderer = w.map().layers.iter().find(|l| l.is_streamed()).unwrap().renderer.clone();
+    sync(&mut w);
+    let whole = w.map().layers.iter().find(|l| l.is_streamed()).unwrap();
+    assert!(!whole.dataset.features.is_empty(), "{:?}", whole.source.as_ref().unwrap().error);
+    assert_eq!(whole.renderer, renderer);
+    assert!(serde_json::to_string(&w.project).unwrap().contains(&plain));
+    // A project written by another app may list no fields for a streamed layer: it gets the
+    // source's, so its features keep their attributes (and a renderer on a field finds it).
+    let mut bare: serde_json::Value = serde_json::from_str(&text).unwrap();
+    for l in bare["maps"][0]["layers"].as_array_mut().unwrap() {
+        l["dataset"]["fields"] = json!([]);
+    }
+    let mut v = Session::new(Project::default());
+    v.run("project.openText", &json!({"text": bare.to_string()})).unwrap();
+    sync(&mut v);
+    let l = v.map().layers.iter().find(|l| l.is_streamed()).unwrap();
+    assert_eq!(l.dataset.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["n"]);
+    assert!(!l.dataset.features.is_empty() && l.dataset.features.iter().all(|f| f.attrs.len() == 1));
     // Copies of a layer still opening (undo snapshots, Load All Features) all open: they share
     // what opening brought, none takes it from the others.
     // The server holds its answers, so the copies are made while the header is still on its way.
