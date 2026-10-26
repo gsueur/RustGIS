@@ -612,17 +612,25 @@ pub enum ClassMethod {
     GeometricInterval,
     /// Classes one standard deviation wide about the mean.
     StandardDeviation,
+    /// Class widths that grow by one step (1, 2, 3… units), for more detail among the low values.
+    ArithmeticProgression,
+    /// Splits at the mean, then at the mean of the values above it, while they stay a minority: for
+    /// a few very large values among many small ones. It sets its own number of classes, at most
+    /// the number asked.
+    HeadTailBreaks,
     /// Bounds typed by hand, kept as they are (see [`Renderer::graduated_manual`]).
     Manual,
 }
 
 impl ClassMethod {
-    pub const ALL: [ClassMethod; 6] = [
+    pub const ALL: [ClassMethod; 8] = [
         ClassMethod::NaturalBreaks,
         ClassMethod::EqualInterval,
         ClassMethod::Quantile,
         ClassMethod::GeometricInterval,
         ClassMethod::StandardDeviation,
+        ClassMethod::ArithmeticProgression,
+        ClassMethod::HeadTailBreaks,
         ClassMethod::Manual,
     ];
     pub fn label(self) -> &'static str {
@@ -632,6 +640,8 @@ impl ClassMethod {
             ClassMethod::Quantile => "Quantile",
             ClassMethod::GeometricInterval => "Geometric Interval",
             ClassMethod::StandardDeviation => "Standard Deviation",
+            ClassMethod::ArithmeticProgression => "Arithmetic Progression",
+            ClassMethod::HeadTailBreaks => "Head/Tail Breaks",
             ClassMethod::Manual => "Manual",
         }
     }
@@ -643,6 +653,10 @@ impl ClassMethod {
             "quantile" => ClassMethod::Quantile,
             "geometricinterval" | "geometric_interval" | "geometric interval" | "geometric" => ClassMethod::GeometricInterval,
             "standarddeviation" | "standard_deviation" | "standard deviation" | "stddev" => ClassMethod::StandardDeviation,
+            "arithmeticprogression" | "arithmetic_progression" | "arithmetic progression" | "arithmetic" => {
+                ClassMethod::ArithmeticProgression
+            }
+            "headtailbreaks" | "head_tail_breaks" | "head/tail breaks" | "head/tail" | "headtail" => ClassMethod::HeadTailBreaks,
             "manual" => ClassMethod::Manual,
             _ => return None,
         })
@@ -1458,6 +1472,20 @@ pub fn class_breaks(sorted: &[f64], k: usize, method: ClassMethod) -> Vec<f64> {
             }
             b
         }
+        ClassMethod::ArithmeticProgression => {
+            // Widths of 1, 2… k units, which add up to the range: the i-th bound is i(i + 1)/2 units
+            // above lo. Taken as a share of the way from lo to hi, so an infinite range can't overflow.
+            let range = hi - lo;
+            let units = (k * (k + 1)) as f64 / 2.0;
+            (1..=k)
+                .map(|i| {
+                    let t = (i * (i + 1)) as f64 / 2.0 / units;
+                    let v = if range.is_finite() { lo + range * t } else { lo * (1.0 - t) + hi * t };
+                    v.clamp(lo, hi)
+                })
+                .collect()
+        }
+        ClassMethod::HeadTailBreaks => head_tail(sorted, k),
     };
     // Only bounds that are the same value: any tolerance merges distinct values somewhere (tiny
     // ones under an absolute one, large ones under a relative one). Repeated bounds come from
@@ -1466,6 +1494,27 @@ pub fn class_breaks(sorted: &[f64], k: usize, method: ClassMethod) -> Vec<f64> {
     if let Some(l) = b.last_mut() {
         *l = hi;
     }
+    b
+}
+
+/// Head/tail breaks (Jiang, 2013): a bound at the mean, then at the mean of the head (the values
+/// above it), and so on while the head holds under 40% of the values it was taken from, for at
+/// most k classes. The last bound is the maximum.
+fn head_tail(sorted: &[f64], k: usize) -> Vec<f64> {
+    let mut b = Vec::new();
+    let mut slice = sorted;
+    while b.len() + 1 < k && slice.len() > 1 {
+        // A running mean: a sum of large values could overflow.
+        let mean = slice.iter().enumerate().fold(0.0, |m, (i, v)| m + (v - m) / (i + 1) as f64);
+        let tail = slice.partition_point(|x| *x <= mean);
+        let Some(head) = slice.get(tail..).filter(|h| !h.is_empty() && tail > 0) else { break };
+        b.push(mean);
+        if head.len() as f64 >= 0.4 * slice.len() as f64 {
+            break;
+        }
+        slice = head;
+    }
+    b.extend(sorted.last());
     b
 }
 
@@ -2328,6 +2377,41 @@ mod tests {
     }
 
     #[test]
+    fn arithmetic_progression_widths_grow_by_one_step() {
+        // 0..=100 in 4 classes: widths of 1, 2, 3 and 4 tenths of the range.
+        let v: Vec<f64> = (0..=100).map(f64::from).collect();
+        let b = class_breaks(&v, 4, ClassMethod::ArithmeticProgression);
+        assert!(close(&b, &[10.0, 30.0, 60.0, 100.0]), "{b:?}");
+        // Across the whole float range nothing overflows.
+        let b = class_breaks(&[-1e308, 1e308], 3, ClassMethod::ArithmeticProgression);
+        assert!(b.len() == 3 && b.iter().all(|x| x.is_finite()) && b.windows(2).all(|w| w[0] < w[1]), "{b:?}");
+    }
+
+    #[test]
+    fn head_tail_breaks_follow_the_heavy_tail() {
+        // 1..=10 and 100: the mean is 155/11 and the head above it is [100] alone: one split.
+        let mut v: Vec<f64> = (1..=10).map(f64::from).collect();
+        v.push(100.0);
+        let b = class_breaks(&v, 5, ClassMethod::HeadTailBreaks);
+        assert!(close(&b, &[155.0 / 11.0, 100.0]), "{b:?}");
+        // A power law: each head is a small share of the values before it, so it goes on, up to
+        // the classes asked.
+        let v: Vec<f64> = (1..=1000).map(|i| 1000.0 / f64::from(i)).rev().collect();
+        let b = class_breaks(&v, 4, ClassMethod::HeadTailBreaks);
+        assert_eq!(b.len(), 4, "{b:?}");
+        assert!(b.windows(2).all(|w| w[0] < w[1]) && b.last() == Some(&1000.0), "{b:?}");
+        let few = class_breaks(&v, 2, ClassMethod::HeadTailBreaks);
+        assert_eq!(few.len(), 2, "{few:?}");
+        // Evenly spread values: the head above the mean is half of them, so it stops at one split.
+        let v: Vec<f64> = (0..=100).map(f64::from).collect();
+        let b = class_breaks(&v, 6, ClassMethod::HeadTailBreaks);
+        assert!(close(&b, &[50.0, 100.0]), "{b:?}");
+        // Large values: the mean can't overflow.
+        let b = class_breaks(&[1e308, 1e308, 1.5e308], 3, ClassMethod::HeadTailBreaks);
+        assert!(b.iter().all(|x| x.is_finite()) && b.len() == 2, "{b:?}");
+    }
+
+    #[test]
     fn close_values_keep_their_classes() {
         // Bounds closer than f64::EPSILON in absolute terms are still distinct when the values
         // themselves are that small.
@@ -2350,6 +2434,8 @@ mod tests {
         }
         assert_eq!(ClassMethod::from_name("stddev"), Some(ClassMethod::StandardDeviation));
         assert_eq!(ClassMethod::from_name("geometric"), Some(ClassMethod::GeometricInterval));
+        assert_eq!(ClassMethod::from_name("arithmetic"), Some(ClassMethod::ArithmeticProgression));
+        assert_eq!(ClassMethod::from_name("headTail"), Some(ClassMethod::HeadTailBreaks));
     }
 
     #[test]
