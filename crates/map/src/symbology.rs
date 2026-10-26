@@ -1504,8 +1504,11 @@ fn head_tail(sorted: &[f64], k: usize) -> Vec<f64> {
     let mut b = Vec::new();
     let mut slice = sorted;
     while b.len() + 1 < k && slice.len() > 1 {
-        // A running mean: a sum of large values could overflow.
-        let mean = slice.iter().enumerate().fold(0.0, |m, (i, v)| m + (v - m) / (i + 1) as f64);
+        // On values scaled by the largest magnitude (the slice is sorted), so neither a sum of large
+        // values nor large values of opposite signs can overflow.
+        let (Some(&first), Some(&last)) = (slice.first(), slice.last()) else { break };
+        let s = first.abs().max(last.abs());
+        let mean = if s > 0.0 { s * (slice.iter().map(|v| v / s).sum::<f64>() / slice.len() as f64) } else { 0.0 };
         let tail = slice.partition_point(|x| *x <= mean);
         let Some(head) = slice.get(tail..).filter(|h| !h.is_empty() && tail > 0) else { break };
         b.push(mean);
@@ -2409,6 +2412,11 @@ mod tests {
         // Large values: the mean can't overflow.
         let b = class_breaks(&[1e308, 1e308, 1.5e308], 3, ClassMethod::HeadTailBreaks);
         assert!(b.iter().all(|x| x.is_finite()) && b.len() == 2, "{b:?}");
+        // Nor with large values of opposite signs.
+        for v in [[-1.7e308, 1.7e308, 1.7e308], [-1e308, -1e308, 1e308]] {
+            let b = class_breaks(&v, 3, ClassMethod::HeadTailBreaks);
+            assert!(b.len() == 2 && b.iter().all(|x| x.is_finite()) && b[0] > v[0] && b[0] < b[1], "{v:?}: {b:?}");
+        }
     }
 
     #[test]

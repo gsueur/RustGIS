@@ -3642,7 +3642,7 @@ fn symbology(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             ui.horizontal(|ui| {
                 let input_label = ui.label(tl!("Method"));
                 egui::ComboBox::from_id_salt("sym_method").selected_text(tl!(method.label())).width(180.0).show_ui(ui, |ui| {
-                    for m in methods_by_name(true) {
+                    for m in methods_by_name() {
                         if ui.selectable_label(m == *method, tl!(m.label())).clicked() {
                             let _ = app.run("layer.symbology", json!({"type": "graduated", "field": field, "method": format!("{m:?}"), "classes": breaks.len(), "ramp": ramp.name()}));
                         }
@@ -3753,10 +3753,9 @@ fn transparency_drag(app: &mut RustGisApp, ui: &Ui, r: &egui::Response, l: &Laye
     );
 }
 
-/// The classification methods in alphabetical order of their names in the interface language, with
-/// Manual (bounds typed by hand) or without it.
-fn methods_by_name(manual: bool) -> Vec<ClassMethod> {
-    let mut m: Vec<ClassMethod> = ClassMethod::ALL.into_iter().filter(|m| manual || *m != ClassMethod::Manual).collect();
+/// The classification methods in alphabetical order of their names in the interface language.
+fn methods_by_name() -> Vec<ClassMethod> {
+    let mut m = ClassMethod::ALL.to_vec();
     m.sort_by_cached_key(|m| crate::i18n::t_raw(m.label()).to_lowercase());
     m
 }
@@ -5372,7 +5371,7 @@ fn raster_symbology(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
                     .width(180.0)
                     .show_ui(ui, |ui| {
                         // Manual bounds are for Graduated Colors; a raster's are worked out.
-                        for mm in methods_by_name(false) {
+                        for mm in methods_by_name().into_iter().filter(|m| *m != ClassMethod::Manual) {
                             if ui.selectable_label(mm == m, tl!(mm.label())).clicked() {
                                 let _ = app.run(
                                     "raster.symbology",
