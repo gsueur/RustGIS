@@ -1650,6 +1650,7 @@ mod tests {
                 ramp: rustgis_map::Ramp::Ember,
                 method: rustgis_map::ClassMethod::NaturalBreaks,
                 min: 0.0,
+                classes: 0,
                 class_labels: Default::default(),
                 class_strokes: Default::default(),
             };

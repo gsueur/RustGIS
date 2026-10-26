@@ -3638,13 +3638,15 @@ fn symbology(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             legend_list(app, ui, &l, t);
         }
         Renderer::Graduated { field, breaks, ramp, method, min, .. } => {
+            // Re-classing keeps the classes asked for, not the fewer some methods found.
+            let asked = l.renderer.classes_asked();
             field_combo(app, ui, "Field", field, &numeric, "graduated");
             ui.horizontal(|ui| {
                 let input_label = ui.label(tl!("Method"));
                 egui::ComboBox::from_id_salt("sym_method").selected_text(tl!(method.label())).width(180.0).show_ui(ui, |ui| {
                     for m in methods_by_name() {
                         if ui.selectable_label(m == *method, tl!(m.label())).clicked() {
-                            let _ = app.run("layer.symbology", json!({"type": "graduated", "field": field, "method": format!("{m:?}"), "classes": breaks.len(), "ramp": ramp.name()}));
+                            let _ = app.run("layer.symbology", json!({"type": "graduated", "field": field, "method": format!("{m:?}"), "classes": asked, "ramp": ramp.name()}));
                         }
                     }
                 }).response.labelled_by(input_label.id);
@@ -3654,7 +3656,7 @@ fn symbology(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             } else {
                 ui.horizontal(|ui| {
                     let input_label = ui.label(tl!("Classes"));
-                    let mut k = breaks.len();
+                    let mut k = asked;
                     if ui.add(egui::DragValue::new(&mut k).range(1..=12)).labelled_by(input_label.id).changed() {
                         let _ = app.run(
                             "layer.symbology",

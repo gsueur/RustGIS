@@ -695,6 +695,11 @@ pub enum Renderer {
         ramp: Ramp,
         method: ClassMethod,
         min: f64,
+        /// The classes asked for: there can be fewer breaks, as Standard Deviation, Head/Tail
+        /// Breaks and repeated bounds give fewer. 0 (a project from before it was kept) is as many
+        /// as there are breaks; see [`Renderer::classes_asked`].
+        #[serde(default)]
+        classes: usize,
         /// Legend labels set by hand, by class index (0 is the lowest class); a class without one
         /// shows its range.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -838,7 +843,12 @@ impl Renderer {
         base: Symbol,
     ) -> Result<Renderer, String> {
         let k = classes.clamp(1, 12);
-        Self::graduated_by(ds, rows, field, method, ramp, base, |vals| Ok(class_breaks(vals, k, method)))
+        Self::graduated_by(ds, rows, field, method, ramp, base, |vals| Ok(class_breaks(vals, k, method))).map(|mut r| {
+            if let Renderer::Graduated { classes, .. } = &mut r {
+                *classes = k;
+            }
+            r
+        })
     }
 
     /// Builds a graduated-colours renderer on the class bounds typed by hand: the classes' upper
@@ -902,9 +912,25 @@ impl Renderer {
             ramp,
             method,
             min,
+            classes: n,
             class_labels: BTreeMap::new(),
             class_strokes: BTreeMap::new(),
         })
+    }
+
+    /// A Graduated Colors renderer's classes as asked, which can be more than it has (see
+    /// `classes`); 0 for other renderers.
+    pub fn classes_asked(&self) -> usize {
+        match self {
+            Renderer::Graduated { classes, breaks, .. } => {
+                if *classes > 0 {
+                    *classes
+                } else {
+                    breaks.len()
+                }
+            }
+            _ => 0,
+        }
     }
 
     /// Builds a proportional-symbols renderer on a numeric `field`, sized over the rows `rows` keeps
@@ -1476,10 +1502,10 @@ pub fn class_breaks(sorted: &[f64], k: usize, method: ClassMethod) -> Vec<f64> {
             // Widths of 1, 2… k units, which add up to the range: the i-th bound is i(i + 1)/2 units
             // above lo. Taken as a share of the way from lo to hi, so an infinite range can't overflow.
             let range = hi - lo;
-            let units = (k * (k + 1)) as f64 / 2.0;
+            let units = k.saturating_mul(k.saturating_add(1)) as f64 / 2.0;
             (1..=k)
                 .map(|i| {
-                    let t = (i * (i + 1)) as f64 / 2.0 / units;
+                    let t = (i.saturating_mul(i.saturating_add(1)) as f64 / 2.0 / units).min(1.0);
                     let v = if range.is_finite() { lo + range * t } else { lo * (1.0 - t) + hi * t };
                     v.clamp(lo, hi)
                 })
@@ -1510,7 +1536,11 @@ fn head_tail(sorted: &[f64], k: usize) -> Vec<f64> {
         let s = first.abs().max(last.abs());
         let mean = if s > 0.0 { s * (slice.iter().map(|v| v / s).sum::<f64>() / slice.len() as f64) } else { 0.0 };
         let tail = slice.partition_point(|x| *x <= mean);
-        let Some(head) = slice.get(tail..).filter(|h| !h.is_empty() && tail > 0) else { break };
+        // No value at or below the mean (or none above it): no split.
+        if tail == 0 {
+            break;
+        }
+        let Some(head) = slice.get(tail..).filter(|h| !h.is_empty()) else { break };
         b.push(mean);
         if head.len() as f64 >= 0.4 * slice.len() as f64 {
             break;
@@ -2447,6 +2477,30 @@ mod tests {
     }
 
     #[test]
+    fn graduated_keeps_the_classes_asked() {
+        // Head/Tail Breaks finds 2 classes in evenly spread values; the 5 asked are kept, so the
+        // next method or class count starts from them.
+        let mut d = Dataset::new("t", GeometryType::Polygon, vec![Field::new("v", FieldType::Double)]);
+        for v in 0..=100 {
+            d.push(None, vec![Value::Float(f64::from(v))]);
+        }
+        let base = Symbol::default_for(GeometryType::Polygon, 0);
+        let r = Renderer::graduated(&d, &[], "v", 5, ClassMethod::HeadTailBreaks, Ramp::Ember, base).unwrap();
+        let Renderer::Graduated { breaks, .. } = &r else { panic!("graduated renderer expected") };
+        assert_eq!((breaks.len(), r.classes_asked()), (2, 5));
+        let back: Renderer = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+        assert_eq!(back.classes_asked(), 5);
+        // Manual bounds ask for as many classes as they make.
+        let m = Renderer::graduated_manual(&d, &[], "v", &[10.0, 20.0], Ramp::Ember, base).unwrap();
+        assert_eq!(m.classes_asked(), 3);
+        // A project from before the count was kept asks for as many classes as it has.
+        let mut old = serde_json::to_value(&r).unwrap();
+        old["Graduated"].as_object_mut().unwrap().remove("classes");
+        let old: Renderer = serde_json::from_value(old).unwrap();
+        assert_eq!(old.classes_asked(), 2);
+    }
+
+    #[test]
     fn graduated_symbols_by_value() {
         let mut d = Dataset::new("t", GeometryType::Polygon, vec![Field::new("v", FieldType::Double)]);
         for v in [1.0, 2.0, 50.0, 60.0] {
@@ -2517,6 +2571,7 @@ mod tests {
             ramp,
             method: ClassMethod::Quantile,
             min: 0.0,
+            classes: breaks.len(),
             class_labels: Default::default(),
             class_strokes: Default::default(),
         }
